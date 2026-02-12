@@ -1,0 +1,190 @@
+import numpy as np
+
+# STEP 2 – Represent the state of the standings (win totals)
+# We store:
+#   - starting wins
+#   - tiebreaker priority (lower number = wins tiebreak)
+#   - which teams are division winners
+# Only head-to-head remaining games between these 8 teams are modeled.
+# Other games vs unlisted teams are assumed to average out to 0.500.
+
+teams = ["Brewers", "Phillies", "Dodgers", "Cubs",
+         "Padres", "Mets", "Reds", "Dbacks"]
+
+# Wins as of Sept 23, 2025
+start_wins = {
+    "Brewers": 95,
+    "Phillies": 92,
+    "Dodgers": 88,
+    "Cubs": 88,
+    "Padres": 86,
+    "Mets": 80,
+    "Reds": 80,
+    "Dbacks": 79,
+}
+
+# Tiebreaker order from the table (1 = best tiebreaker)
+tiebreak_rank = {
+    "Brewers": 1,
+    "Phillies": 2,
+    "Dodgers": 3,
+    "Cubs": 4,
+    "Padres": 5,
+    "Mets": 6,
+    "Reds": 7,
+    "Dbacks": 8,
+}
+
+# Division winners are fixed: these three get seeds 1–3 (in record order)
+division_winners = {"Brewers", "Phillies", "Dodgers"}
+
+# Remaining head-to-head series only (games between these listed teams)
+# (teamA, teamB, number_of_games)
+remaining_series = [
+    ("Dodgers", "Dbacks", 3),
+    ("Cubs",    "Mets",   3),
+    ("Brewers", "Padres", 2),
+]
+
+
+# STEP 3 – Simulate the remaining regular-season H2H games
+# For a single simulation:
+#   * start from the Sept 23 win totals
+#   * for each series, flip a fair coin for each game to decide winner
+#   * update wins accordingly
+# This returns the final regular-season wins for all eight teams
+# under our simplified schedule model.
+
+rng = np.random.default_rng()
+
+def simulate_regular_season_once():
+    wins = start_wins.copy()
+
+    for teamA, teamB, n_games in remaining_series:
+        # For each game, 50% chance team A wins, 50% team B wins
+        # Sample number of wins for teamA from Binomial(n_games, 0.5)
+        wins_A = rng.binomial(n_games, 0.5)
+        wins_B = n_games - wins_A
+        wins[teamA] += wins_A
+        wins[teamB] += wins_B
+
+    return wins
+
+
+# STEP 4 – Determine playoff seeding from final wins
+# Given final win totals:
+#   * Rank division winners among themselves by (wins, tiebreak)
+#     to assign seeds 1–3.
+#   * Rank all non-division teams by (wins, tiebreak) to assign
+#     seeds 4–6 (wild cards).
+# This implements the tiebreaker rule "who was higher on Sept 23."
+
+def determine_seeds(wins):
+    # Separate division winners and others
+    div_list = []
+    wc_list  = []
+
+    for team in teams:
+        entry = (team, wins[team], tiebreak_rank[team])
+        if team in division_winners:
+            div_list.append(entry)
+        else:
+            wc_list.append(entry)
+
+    # Sort by (-wins, tiebreak_rank)
+    div_list.sort(key=lambda x: (-x[1], x[2]))
+    wc_list.sort(key=lambda x: (-x[1], x[2]))
+
+    seed_map = {}
+
+    # Seeds 1–3: division winners
+    for s, (team, w, rank) in enumerate(div_list, start=1):
+        seed_map[s] = team
+
+    # Seeds 4–6: top three wild cards
+    for s, (team, w, rank) in enumerate(wc_list[:3], start=4):
+        seed_map[s] = team
+
+    return seed_map
+
+
+#
+# STEP 5 – Simulate the Wild Card round (best-of-3)
+# The better-seeded team wins any single playoff game with prob 0.55.
+# We simulate a best-of-3 series between:
+#   * seeds 4 and 5
+#   * seeds 3 and 6
+# Our event of interest only depends on the winner of the 4–5 series,
+# because the Brewers (seed 1) always play that winner.
+
+def simulate_best_of_3(favorite, underdog, p_favorite=0.55):
+    """Simulate a best-of-3 series. Return name of series winner."""
+    fav_wins = 0
+    dog_wins = 0
+    while fav_wins < 2 and dog_wins < 2:
+        if rng.random() < p_favorite:
+            fav_wins += 1
+        else:
+            dog_wins += 1
+    return favorite if fav_wins == 2 else underdog
+
+
+def simulate_playoffs_once(wins):
+    """
+    Given final regular-season wins:
+      * determine seeds 1–6
+      * simulate the 4–5 Wild Card series (and 3–6 for completeness)
+      * return the opponent that the #1 seed faces in the Division Series
+    """
+    seeds = determine_seeds(wins)
+
+    # Sanity: figure out who is seed 1
+    seed1_team = seeds[1]
+
+    # Seeds for Wild Card round
+    team3 = seeds[3]
+    team4 = seeds[4]
+    team5 = seeds[5]
+    team6 = seeds[6]
+
+    # 4 vs 5: team4 is better seed (favorite in each game)
+    winner_45 = simulate_best_of_3(team4, team5, p_favorite=0.55)
+
+    # 3 vs 6: not needed for Brewers, but we simulate for completeness
+    winner_36 = simulate_best_of_3(team3, team6, p_favorite=0.55)
+
+    # Division Series matchups:
+    #   Seed 1 vs winner 4–5
+    #   Seed 2 vs winner 3–6
+    opponent_for_1 = winner_45
+
+    return seed1_team, opponent_for_1
+
+
+# STEP 6 – Monte Carlo estimate of P(Brewers face Padres)
+# Repeatedly:
+#   * simulate remaining H2H regular-season games
+#   * determine seeds
+#   * simulate Wild Card round
+#   * check whether:
+#        - Brewers are seed 1, AND
+#        - their DS opponent is Padres
+# The fraction of trials where this happens estimates the desired
+# probability, under our modeling assumptions.
+
+def estimate_prob_brewers_vs_padres(num_trials=100000):
+    count_event = 0
+    count_total = 0
+
+    for _ in range(num_trials):
+        wins = simulate_regular_season_once()
+        seed1, opp_for_1 = simulate_playoffs_once(wins)
+        count_total += 1
+
+        if seed1 == "Brewers" and opp_for_1 == "Padres":
+            count_event += 1
+
+    return count_event / count_total
+
+prob_est = estimate_prob_brewers_vs_padres(num_trials=50000)
+print(f"Estimated P(Brewers face Padres in DS) ≈ {prob_est:.4f}")
