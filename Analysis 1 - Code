@@ -1,0 +1,273 @@
+import numpy as np
+
+# STEP 2 – State space definition and why it has 648 states
+# I represent a game situation as a state (b, o, B, R):
+# - b  : next batter in the order, 1..9
+# - o  : number of outs, 0..2
+# - B  : base configuration as bitmask 0..7
+#       bit 0 (1) = runner on 1st
+#       bit 1 (2) = runner on 2nd
+#       bit 2 (4) = runner on 3rd
+# - R  : runs already scored in the inning, 0..2
+#
+# Total number of non-terminal states:
+#   9 batters * 3 outs * 8 base masks * 3 run counts = 648
+# These are exactly the states we build below.
+
+BASE_STATES = list(range(8))  # 0..7
+
+def next_batter(b):
+    """Return next batter in order (1..9, wrapping)."""
+    return 1 if b == 9 else b + 1
+
+def build_state_space():
+    # Enumerate all (b, o, B, R) with b=1..9, o=0..2, B=0..7, R=0..2
+    states = []
+    index = {}
+    for b in range(1, 10):          # batters 1..9
+        for outs in range(3):      # 0,1,2
+            for B in BASE_STATES:    # 0..7
+                for R in range(3):     # 0,1,2
+                    s = (b, outs, B, R)
+                    idx = len(states)
+                    states.append(s)
+                    index[s] = idx
+    return states, index
+
+states, state_index = build_state_space()
+N_STATES = len(states)
+print("Number of states:", N_STATES)      # should be 648
+
+
+# STEP 3 – How the transition rules are defined
+# For each state (b,o,B,R), the next plate appearance is:
+#    Strikeout (K): outs +1, bases/runs unchanged
+#    Single   (S): runners +2 bases, batter to 1st
+#    HR       (HR): all runners + batter score, bases empty
+#
+# Based on these rules we classify, for each state and outcome:
+#   'win'  : inning ends in a walk-off (R' >= 3)
+#    'lose' : inning ends with 3 outs and R' < 3
+#    'state': move to new non-terminal state (b',o',B',R')
+
+def advance_on_single(B):
+    """
+    Given base mask B, compute (new_base_mask, runs_scored)
+    when the batter hits a single and all runners advance exactly 2 bases.
+
+    Rules:
+    - Runner on 2nd -> scores
+    - Runner on 3rd -> scores
+    - Runner on 1st -> moves to 3rd
+    - Batter goes to 1st
+    """
+    runs = 0
+    on1 = bool(B & 1)
+    on2 = bool(B & 2)
+    on3 = bool(B & 4)
+
+    # Runners from 2nd and 3rd score
+    if on2:
+        runs += 1
+    if on3:
+        runs += 1
+
+    # Runner from 1st moves to 3rd
+    new_on3 = on1
+    # Batter to 1st
+    new_on1 = True
+
+    B_new = 0
+    if new_on1:
+        B_new |= 1  # 1st
+    if new_on3:
+        B_new |= 4  # 3rd
+
+    return B_new, runs
+
+def hr_result(B):
+    """
+    Given base mask B, compute (new_base_mask, runs_scored)
+    when the batter hits a home run.
+    All runners and batter score, bases empty after.
+    """
+    runs = 1  # batter
+    if B & 1:
+        runs += 1
+    if B & 2:
+        runs += 1
+    if B & 4:
+        runs += 1
+    return 0, runs  # bases empty after HR
+
+def batter_probs(b, p):
+    """
+    Return a dict with probabilities for outcomes (K, S, HR) for batter b.
+    p = single probability for batters 4 and 5.
+    """
+    if b in [1, 2, 7, 8, 9]:
+        return {'K': 0.60, 'S': 0.30, 'HR': 0.10}
+    elif b in [3, 6]:
+        return {'K': 0.60, 'S': 0.25, 'HR': 0.15}
+    elif b in [4, 5]:
+        return {'K': 0.90 - p, 'S': p, 'HR': 0.10}
+    else:
+        raise ValueError("Batter index out of range: {}".format(b))
+
+OUTCOME_LIST = ['K', 'S', 'HR']
+
+def precompute_transitions(states, state_index):
+    """
+    For each state and outcome (K,S,HR) precompute:
+      - 'win'  if R' >= 3  (walk-off)
+      - 'lose' if outs' == 3 and R' < 3
+      - 'state', j for non-terminal (next state's index)
+    """
+    transitions = [[None] * len(OUTCOME_LIST) for _ in range(len(states))]
+
+    for i, s in enumerate(states):
+        b, o, B, R = s
+        for out_idx, outcome in enumerate(OUTCOME_LIST):
+            if outcome == 'K':
+                o2 = o + 1
+                B2 = B
+                R2 = R
+            elif outcome == 'S':
+                B2, dR = advance_on_single(B)
+                o2 = o
+                R2 = R + dR
+            elif outcome == 'HR':
+                B2, dR = hr_result(B)
+                o2 = o
+                R2 = R + dR
+            else:
+                raise ValueError("Bad outcome")
+
+            # Classify result according to our Markov model
+            if R2 >= 3:
+                transitions[i][out_idx] = ('win', None)
+            elif o2 >= 3:
+                transitions[i][out_idx] = ('lose', None)
+            else:
+                next_state = (next_batter(b), o2, B2, R2)
+                j = state_index[next_state]
+                transitions[i][out_idx] = ('state', j)
+
+    return transitions
+
+transitions = precompute_transitions(states, state_index)
+
+
+# STEP 4 + STEP 5 – Bellman equation and linear system
+# STEP 4: Deriving the win-probability equation:
+#   For each non-terminal state s, the Bellman equation is
+#
+#     V(s) = sum_over_outcomes P(outcome | b) * [win prob after outcome]
+#
+#   where "win prob after outcome" is:
+#     1  if that outcome produces a walk-off,
+#     0  if it ends the inning without a walk-off,
+#     V(s') if it moves to another non-terminal state s'.
+#
+# STEP 5: Rearranging into linear form:
+#
+#   V(s) - sum_{nonterminal outcomes} P(outcome|b) * V(s') =
+#        sum_{win outcomes} P(outcome|b)
+#
+# This is one linear equation in the unknowns V(s). Below we build
+# the matrix A and vector b_vec that encode these equations:
+#   A * V = b_vec
+
+
+def compute_walkoff_prob(p, states, state_index, transitions):
+    """
+    For a given p (single prob for batters 4 and 5),
+    build and solve the linear system implied by the Bellman equations,
+    then return V_start(p) from the initial state (1,0,empty,0).
+    """
+    n = len(states)
+    A = np.zeros((n, n), dtype=float)
+    b_vec = np.zeros(n, dtype=float)
+
+    for i, s in enumerate(states):
+        b, o, B, R = s
+
+        # Coefficient of V(s) on the LHS is 1 (from V(s) term).
+        A[i, i] = 1.0
+        probs = batter_probs(b, p)
+
+        for out_idx, outcome in enumerate(OUTCOME_LIST):
+            P = probs[outcome]
+            if P == 0.0:
+                continue
+
+            t_type, j = transitions[i][out_idx]
+
+            if t_type == 'win':
+                # RHS gets +P (since outcome → immediate win with value 1)
+                b_vec[i] += P
+            elif t_type == 'lose':
+                # outcome → immediate loss with value 0: no contribution
+                continue
+            elif t_type == 'state':
+                # outcome → non-terminal state s':
+                # subtract P * V(s') on LHS to implement:
+                # V(s) - P * V(s') = ...
+                A[i, j] -= P
+            else:
+                raise ValueError("Unknown transition type")
+
+    # Solve A * V = b_vec for all state values V(s)
+    V = np.linalg.solve(A, b_vec)
+
+    # Extract the walk-off probability from the starting state
+    start_state = (1, 0, 0, 0)  # batter1, 0 outs, empty bases, 0 runs
+    start_index = state_index[start_state]
+    return V[start_index]
+
+# sanity check: show walk-off probability for a few p values
+for test_p in [0.0, 0.2, 0.4]:
+    prob = compute_walkoff_prob(test_p, states, state_index, transitions)
+    print(f"p = {test_p:.3f}, walk-off probability = {prob:.4f}")
+
+
+# STEP 6 – Solving for the specific p that gives 20% walk-off
+# We now have a function V_start(p) = compute_walkoff_prob(p, ...).
+# This function increases with p (more singles, fewer strikeouts).
+# We use bisection to solve V_start(p*) ≈ 0.20.
+
+def find_p_for_target(target=0.20, tol=1e-4, max_iter=50):
+    """
+    Find p in [0, 0.9] such that V_start(p) ≈ target
+    using a simple bisection method.
+    """
+    lo, hi = 0.0, 0.9
+    prob_lo = compute_walkoff_prob(lo, states, state_index, transitions)
+    prob_hi = compute_walkoff_prob(hi, states, state_index, transitions)
+
+    print(f"p = {lo:.3f}, walk-off prob = {prob_lo:.5f}")
+    print(f"p = {hi:.3f}, walk-off prob = {prob_hi:.5f}")
+
+    assert prob_lo <= target <= prob_hi, "Target not bracketed in [0, 0.9]"
+
+    for it in range(max_iter):
+        mid = 0.5 * (lo + hi)
+        prob_mid = compute_walkoff_prob(mid, states, state_index, transitions)
+        print(f"Iter {it+1:2d}: p = {mid:.5f}, walk-off prob = {prob_mid:.6f}")
+
+        if prob_mid < target:
+            lo = mid
+        else:
+            hi = mid
+
+        if hi - lo < tol:
+            break
+
+    p_star = 0.5 * (lo + hi)
+    prob_star = compute_walkoff_prob(p_star, states, state_index, transitions)
+    return p_star, prob_star
+
+p_star, prob_at_p_star = find_p_for_target(target=0.20, tol=1e-4)
+
+print("\nEstimated p* (single probability for batters 4 & 5): {:.6f}".format(p_star))
+print("Walk-off probability at p*: {:.6f}".format(prob_at_p_star))
