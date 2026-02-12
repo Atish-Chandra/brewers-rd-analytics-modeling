@@ -1,0 +1,173 @@
+import numpy as np
+
+#
+# STEP 2 – Inputs & basic assumptions
+# - 1 WAR = 1 unit of value
+# - Each year: 20% chance of full-season injury (0 WAR, full salary)
+# - If injured in year t, year t+1 WAR projection is reduced by 1.5
+# - No discounting
+# - Option A: team only signs a 1-year deal if the *expected* value
+#   from that point onward is >= 0 (otherwise they walk away).
+
+inj_prob = 0.20
+p_healthy = 1.0 - inj_prob
+
+years_y2y = [2026, 2027, 2028, 2029, 2030, 2031]
+years_guar = [2026, 2027, 2028, 2029, 2030, 2031, 2032, 2033]
+
+# Baseline WAR projections (if not injured in previous season)
+WAR = {
+    2026: 3.2,
+    2027: 3.5,
+    2028: 3.7,
+    2029: 3.4,
+    2030: 3.2,
+    2031: 3.0,
+    2032: 2.8,
+    2033: 2.6,
+}
+
+# Year-to-year salaries (depend on whether player was injured last year)
+salary_y2y_healthy_prev = {
+    2026: 0.80,
+    2027: 0.85,
+    2028: 0.90,
+    2029: 4.80,
+    2030: 9.00,
+    2031: 15.60,
+}
+
+salary_y2y_inj_prev = {
+    2026: 0.80,
+    2027: 0.85,
+    2028: 0.90,
+    2029: 2.80,
+    2030: 5.25,
+    2031: 9.10,
+}
+
+# Guaranteed salaries 2026–2031; 2032–2033 each have salary X
+salary_guaranteed = {
+    2026: 2.00,
+    2027: 2.50,
+    2028: 4.50,
+    2029: 7.50,
+    2030: 10.50,
+    2031: 14.50,
+    2032: "X",
+    2033: "X",
+}
+
+
+# STEP 3 – Dynamic program for the year-to-year strategy
+# State: (year, prev_inj) where prev_inj ∈ {False, True}
+# V_y2y[year][prev_inj] = max expected value from that year onward
+#   if the team is allowed to choose sign/decline for each season.
+# Recurrence:
+#   - Adjust WAR by -1.5 if prev_inj
+#   - Expected WAR this season = p_healthy * adjusted_WAR
+#   - Salary depends on prev_inj (year-to-year table)
+#   - Immediate value = expected WAR - salary
+#   - Continuation if sign:
+#         p_healthy * V_y2y[year+1][False] +
+#         inj_prob   * V_y2y[year+1][True]
+#   - Sign value = immediate + continuation
+#   - V_y2y[year][prev_inj] = max(0, sign value)
+
+def compute_ev_year_to_year():
+    # add sentinel year 2032 with value 0 (no more seasons)
+    V_y2y = {year: {False: 0.0, True: 0.0} for year in years_y2y + [2032]}
+    V_y2y[2032] = {False: 0.0, True: 0.0}
+
+    for year in reversed(years_y2y):
+        for prev_inj in [False, True]:
+            # Adjust WAR if injured last year
+            adjusted_war = WAR[year] - (1.5 if prev_inj else 0.0)
+            expected_war = p_healthy * adjusted_war  # injured this year → 0 WAR
+
+            # Salary depends on whether last year had injury
+            if prev_inj:
+                salary = salary_y2y_inj_prev[year]
+            else:
+                salary = salary_y2y_healthy_prev[year]
+
+            immediate_value = expected_war - salary
+
+            # Expected continuation value IF we sign this season
+            cont_value = (
+                p_healthy * V_y2y.get(year + 1, {False: 0.0})[False]
+                + inj_prob * V_y2y.get(year + 1, {True: 0.0})[True]
+            )
+
+            sign_value = immediate_value + cont_value
+
+            # Team can always choose to walk away (value = 0)
+            V_y2y[year][prev_inj] = max(0.0, sign_value)
+
+    # Starting state: year 2026, not injured last year
+    return V_y2y[2026][False], V_y2y
+
+
+# STEP 4 – Dynamic program for the guaranteed 8-year contract
+# State: (year, prev_inj) as before, but the team CANNOT walk away.
+# G[year][prev_inj] = expected value from that year onward, assuming
+#   all salaries 2026–2033 are guaranteed and must be paid.
+# Recurrence (no max with 0 here):
+#   - Adjusted WAR, expected WAR, salary similar as above
+#   - Immediate value = expected WAR - salary_guaranteed[year]
+#   - Continuation = p_healthy * G[year+1][False] + inj_prob * G[year+1][True]
+#   - G[year][prev_inj] = immediate + continuation
+# Salary_guaranteed[2032] and [2033] use free parameter X.
+
+def compute_ev_guaranteed(X):
+    G = {year: {False: 0.0, True: 0.0} for year in years_guar + [2034]}
+    G[2034] = {False: 0.0, True: 0.0}
+
+    for year in reversed(years_guar):
+        for prev_inj in [False, True]:
+            adjusted_war = WAR[year] - (1.5 if prev_inj else 0.0)
+            expected_war = p_healthy * adjusted_war
+
+            sal = salary_guaranteed[year]
+            if sal == "X":
+                sal = X
+
+            immediate_value = expected_war - sal
+            cont_value = (
+                p_healthy * G[year + 1][False]
+                + inj_prob * G[year + 1][True]
+            )
+
+            G[year][prev_inj] = immediate_value + cont_value
+
+    # Starting state: year 2026, not injured last year
+    return G[2026][False]
+
+
+# STEP 5 – Solve for X such that EV_year_to_year = EV_guaranteed(X)
+# We know EV_guaranteed(X) is linear in X, because X only appears
+# as a constant salary in 2032 and 2033 (always paid).
+# Numerically, EV_guaranteed(X) = a + b * X. We compute:
+#   a = EV_guaranteed(0)
+#   a + b = EV_guaranteed(1)  →  b = EV(1) - EV(0)
+# Then solve:
+#   EV_y2y = a + b * X  →  X = (EV_y2y - a) / b
+
+if __name__ == "__main__":
+    ev_y2y, V_table = compute_ev_year_to_year()
+    print(f"Expected value of optimal year-to-year strategy: {ev_y2y:.4f}")
+
+    a = compute_ev_guaranteed(0.0)
+    a_plus_b = compute_ev_guaranteed(1.0)
+    b = a_plus_b - a
+
+    print(f"EV_guaranteed(0) = {a:.4f}")
+    print(f"Slope w.r.t X (b) = {b:.4f}")
+
+    # Solve for break-even X
+    X_star = (ev_y2y - a) / b
+    print(f"Break-even X per year (2032 & 2033): {X_star:.4f}")
+
+    # Optional: confirm EVs match at X_star
+    ev_guar_star = compute_ev_guaranteed(X_star)
+    print(f"EV_guaranteed(X*) = {ev_guar_star:.4f}")
