@@ -1,0 +1,122 @@
+# Brewers Research & Development – Coding Solutions (2025–2026)
+
+## Overview
+
+This repository contains my analytical and computational solutions to selected quantitative problems from the Milwaukee Brewers Research & Development Questionnaire (2025–2026).
+
+The goal of these problems is to evaluate probabilistic reasoning, simulation design, decision modeling, and expected-value analysis within realistic baseball and operational contexts.
+
+All solutions are implemented in Python using a combination of:
+
+- State-space modeling
+- Dynamic programming
+- Monte Carlo simulation
+- Expected value analysis
+- Probability modeling
+
+---
+
+## Problem Statements & Requirements
+
+Below is a structured summary of the core analytical challenges addressed in this repository.
+
+---
+
+### Problem 1 – Walk-Off Probability Modeling
+
+**Objective**
+
+Determine the value of a parameter \( p \) such that a team trailing by two runs in the bottom of the ninth inning has exactly a 20% probability of walking off and winning the game.
+
+**Given**
+
+- A fixed batting order (1–9).
+- Known outcome probabilities (Strikeout, Single, Home Run).
+- For batters 4 and 5, probabilities depend on parameter \( p \).
+- Singles advance all runners exactly two bases.
+- No other advancement rules apply.
+- The inning ends at three outs.
+- The game ends immediately upon scoring the winning run.
+
+**Requirements**
+
+- Model the inning as a probabilistic state-transition system.
+- Track outs, base occupancy, batting order, and runs scored.
+- Compute win probability as a function of \( p \).
+- Solve for the value of \( p \) that yields a 20% walk-off probability.
+
+This is implemented using a structured state-space model and numerical root-finding.
+
+---
+
+### Problem 2 – Postseason Opponent Probability
+
+**Objective**
+
+Compute the probability that the Brewers face the Padres in the Divisional Series under specific postseason and tiebreaker rules.
+
+**Given**
+
+- Current standings
+- Remaining regular season games modeled as 50/50 outcomes
+- Tiebreaker rules based on existing standings
+- Wild Card round structure
+- Higher seed wins each playoff game with 55% probability
+
+**Requirements**
+
+- Simulate remaining regular-season outcomes
+- Determine final seedings with tiebreak logic
+- Simulate Wild Card series outcomes
+- Estimate the probability of the Brewers facing the Padres
+
+This is implemented using Monte Carlo simulation with repeatable probabilistic modeling.
+
+---
+
+### Problem 3 – Contract Break-Even Analysis
+
+**Objective**
+
+Determine the salary value \( X \) in the final two years of an 8-year guaranteed contract such that it is break-even relative to a year-to-year contract structure.
+
+**Given**
+
+- Projected WAR values (2026–2033)
+- 20% annual probability of season-ending injury
+- WAR penalty of −1.5 in the season following injury
+- Two contract structures:
+  - Year-to-year decision-based renewal
+  - Fully guaranteed 8-year deal with unknown \( X \) in final two seasons
+
+**Requirements**
+
+- Model injury-adjusted expected WAR
+- Compute expected value under both contract structures
+- Use backward induction for decision-based renewal
+- Solve for \( X \) such that expected values are equal
+
+This is implemented using dynamic programming and expected value modeling.
+
+---
+
+## Methodology
+
+Across all problems, the following principles were applied:
+
+- Explicit modeling of assumptions
+- Clear separation of states and transitions
+- Reproducible probabilistic simulations
+- Efficient computation using NumPy
+- Numerical solution techniques where closed-form solutions are infeasible
+
+---
+
+## How to Run
+
+1. Create a virtual environment:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate   # macOS / Linux
+# .venv\Scripts\activate    # Windows
